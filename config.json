@@ -2,7 +2,13 @@
   "default_assignee": "Athos Schrapett",
   "azure_org": "athosschrapett",
   "azure_project": "Arenar",
+  
   "vault_path": "./arenar-vault",
+  "vault_paths": ["./arenar-vault"],
+  "search_enabled": true,
+  "auto_index": true,
+  "watched_folders": ["01-visao", "02-dominios", "03-tecnico", "04-adrs", "05-processos", "06-sprints"],
+  
   "execucoes_folder": "09-execucoes",
   "sprints_folder": "06-sprints",
   "adr_folder": "04-adrs",

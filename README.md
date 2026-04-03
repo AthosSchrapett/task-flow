@@ -1,14 +1,13 @@
 # Task Flow
 
-Sistema de sincronização bidirecional entre Azure DevOps e Obsidian Vault para execução de tarefas com log completo.
+Ferramentas de automação para o projeto Arenar: sincronização Azure DevOps ↔ Obsidian Vault.
 
-## Funcionalidades
+## Ferramentas
 
-- ✅ Sincronização Azure ↔ Obsidian
-- 📝 Log completo de execução (passos, commits, arquivos)
-- ⏱️ Rastreamento de tempo
-- 🔗 Conexão com ADRs para decisões de arquitetura
-- 📊 Índice de execuções no Vault
+| Ferramenta | Descrição |
+|------------|-----------|
+| `task_flow.py` | Fluxo de execução de tarefas com log completo |
+| `vault_query.py` | Consultas e manipulação de notas do vault |
 
 ## Requisitos
 
@@ -19,17 +18,15 @@ Sistema de sincronização bidirecional entre Azure DevOps e Obsidian Vault para
 ## Instalação
 
 ```bash
-# Clone ou copie o projeto
 cd task-flow
-
-# Copie e configure
-cp config.json config.local.json
-# Edite config.local.json com suas configurações
+# Edite config.json se necessário
 ```
 
-## Uso
+---
 
-### Comandos CLI
+## 1. Task Flow - Execução de Tarefas
+
+Sincronização bidirecional Azure ↔ Obsidian com log completo.
 
 ```bash
 # Iniciar execução de tarefa
@@ -90,8 +87,11 @@ py src/task_flow.py list
 ```
 task-flow/
 ├── src/
-│   └── task_flow.py      # Script principal
-├── config.json           # Configuração padrão
+│   ├── task_flow.py      # Execução de tarefas Azure
+│   └── vault_query.py    # Consultas ao vault
+├── config.json           # Configuração unificada
+├── task-flow.cmd         # Wrapper Windows
+├── vault-query.cmd       # Wrapper Windows
 ├── .gitignore
 └── README.md
 ```
@@ -143,6 +143,31 @@ O sistema é projetado para funcionar com:
 → Agente executa: py src/task_flow.py start 758 --info '...'
 → Agente atualiza: Azure-updateWorkItem(id: 758, state: "In Progress")
 ```
+
+---
+
+## 2. Vault Query - Consultas ao Vault
+
+Ferramenta CLI para buscar, listar e manipular notas do Obsidian.
+
+```bash
+# Buscar texto em todas as notas
+py src/vault_query.py search "autenticação"
+
+# Ver conteúdo de uma nota
+py src/vault_query.py get "01-visao/visao-produto"
+
+# Listar notas de uma pasta
+py src/vault_query.py list "06-sprints"
+
+# Criar nova nota
+py src/vault_query.py create "02-dominios/novo-dominio.md" "# Conteúdo"
+
+# Adicionar conteúdo a nota existente
+py src/vault_query.py append "05-processos/backlog.md" "Nova linha"
+```
+
+---
 
 ## Licença
 
