@@ -102,25 +102,34 @@ class TaskExecution:
             "{{TASK_ID}}": str(self.task_id),
             "{{TITLE}}": self.title,
             "{{TYPE}}": self.task_type,
+            "{{STATUS}}": self.status,
             "{{DESCRIPTION}}": self.description or "Sem descrição",
             "{{STARTED_AT}}": self.started_at,
             "{{FINISHED_AT}}": self.finished_at or "",
+            "{{TIME_SPENT_MINUTES}}": str(self.time_spent_minutes) if self.time_spent_minutes else "",
             "{{TIME_SPENT}}": self._format_time_spent(),
             "{{SPRINT}}": self.sprint,
             "{{SPRINT_FILE}}": self._get_sprint_file(),
             "{{STORY_POINTS}}": str(self.story_points),
             "{{CONFIRMED_BY}}": self.confirmed_by or "",
         }
-        
+
         for placeholder, value in replacements.items():
             content = content.replace(placeholder, value)
-        
+
         # Substituir seções dinâmicas
         content = self._inject_logs(content)
         content = self._inject_commits(content)
         content = self._inject_files(content)
         content = self._inject_decisions(content)
-        
+
+        # Marcar resultado como concluído quando a tarefa estiver finalizada
+        if self.status == "done":
+            content = content.replace(
+                "- [ ] Tarefa concluída com sucesso",
+                "- [x] Tarefa concluída com sucesso"
+            )
+
         return content
     
     def _load_template(self) -> str:
@@ -154,8 +163,13 @@ class TaskExecution:
             return content
         
         # Filtra logs para não incluir o log inicial do template (já está no template)
-        logs_to_inject = [log for log in self.logs 
-                         if not (log.entry_type == "log" and "Tarefa iniciada. Status alterado" in log.message)]
+        _skip_types = {"início", "inicio"}
+        _skip_msgs = {"tarefa iniciada", "tarefa iniciada. status alterado"}
+        logs_to_inject = [
+            log for log in self.logs
+            if log.entry_type.lower() not in _skip_types
+            and not any(s in log.message.lower() for s in _skip_msgs)
+        ]
         
         if not logs_to_inject:
             return content
