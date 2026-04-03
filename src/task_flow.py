@@ -404,7 +404,7 @@ class TaskFlowManager:
         return json.dumps({
             "success": True,
             "message": f"✅ Execução iniciada para tarefa {task_id}",
-            "file": str(exec_file.relative_to(ROOT)),
+            "file": str(exec_file.relative_to(PROJECT_ROOT)),
             "azure_update": {
                 "action": "update_status",
                 "task_id": task_id,
@@ -563,7 +563,7 @@ class TaskFlowManager:
         return json.dumps({
             "success": True,
             "message": f"✅ Tarefa {task_id} finalizada!",
-            "file": str(exec_file.relative_to(ROOT)),
+            "file": str(exec_file.relative_to(PROJECT_ROOT)),
             "summary": {
                 "title": execution.title,
                 "time_spent": execution._format_time_spent(),
