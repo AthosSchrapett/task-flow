@@ -130,6 +130,10 @@ class TaskExecution:
                 "- [x] Tarefa concluída com sucesso"
             )
 
+        # Remove placeholder de observações finais se vazio
+        content = content.replace("<!-- FINAL_NOTES_PLACEHOLDER -->", "")
+        content = content.replace("{{FINAL_NOTES}}", "")
+
         return content
     
     def _load_template(self) -> str:
@@ -159,57 +163,63 @@ class TaskExecution:
     
     def _inject_logs(self, content: str) -> str:
         """Injeta entradas de log no conteúdo."""
-        if not self.logs:
-            return content
-        
         # Filtra logs para não incluir o log inicial do template (já está no template)
+        # e remove duplicatas de finalização (mantém apenas o último)
         _skip_types = {"início", "inicio"}
         _skip_msgs = {"tarefa iniciada", "tarefa iniciada. status alterado"}
+        _finish_msg = "tarefa finalizada. tempo total:"
+
         logs_to_inject = [
             log for log in self.logs
             if log.entry_type.lower() not in _skip_types
             and not any(s in log.message.lower() for s in _skip_msgs)
         ]
-        
+
+        # Mantém apenas a última entrada de finalização
+        finish_logs = [l for l in logs_to_inject if _finish_msg in l.message.lower()]
+        if len(finish_logs) > 1:
+            for dup in finish_logs[:-1]:
+                logs_to_inject.remove(dup)
+
         if not logs_to_inject:
-            return content
-        
+            return content.replace("<!-- LOG_ENTRIES_PLACEHOLDER -->", "")
+
         log_text = "\n".join([
             f"### {log.timestamp} — {log.entry_type.title()}\n- {log.message}\n"
             for log in logs_to_inject
         ])
-        
+
         return content.replace("<!-- LOG_ENTRIES_PLACEHOLDER -->", log_text)
     
     def _inject_commits(self, content: str) -> str:
         """Injeta commits no conteúdo."""
         if not self.commits:
-            return content
-        
+            return content.replace("<!-- COMMITS_PLACEHOLDER -->", "")
+
         commit_rows = "\n".join([
             f"| `{c.hash[:7]}` | {c.message} | {c.timestamp} |"
             for c in self.commits
         ])
-        
+
         return content.replace("<!-- COMMITS_PLACEHOLDER -->", commit_rows)
-    
+
     def _inject_files(self, content: str) -> str:
         """Injeta arquivos alterados no conteúdo."""
         if not self.files:
-            return content
-        
+            return content.replace("<!-- FILES_PLACEHOLDER -->", "")
+
         file_rows = "\n".join([
             f"| `{f.path}` | {f.action} | {f.commit_hash or '-'} |"
             for f in self.files
         ])
-        
+
         return content.replace("<!-- FILES_PLACEHOLDER -->", file_rows)
-    
+
     def _inject_decisions(self, content: str) -> str:
         """Injeta decisões no conteúdo."""
         if not self.decisions:
-            return content
-        
+            return content.replace("<!-- DECISIONS_PLACEHOLDER -->", "")
+
         decisions_text = "\n".join([f"- {d}" for d in self.decisions])
         return content.replace("<!-- DECISIONS_PLACEHOLDER -->", decisions_text)
     
@@ -601,6 +611,15 @@ class TaskFlowManager:
             "confirmation_instruction": "Solicite confirmação do solicitante antes de marcar como concluída" if not confirmed_by else None
         })
     
+    def reprocess(self, task_id: int) -> str:
+        """Re-renderiza o arquivo de execução com o template atual sem alterar dados."""
+        execution = self._load_execution(task_id)
+        if not execution:
+            return f"❌ Nenhuma execução encontrada para tarefa {task_id}"
+
+        exec_file = self._save_execution(execution)
+        return f"✅ Tarefa {task_id} re-processada: {exec_file.name}"
+
     def list_executions(self) -> str:
         """Lista todas as execuções."""
         executions = []
@@ -680,6 +699,10 @@ def main():
     p_finish.add_argument("task_id", type=int, help="ID da tarefa")
     p_finish.add_argument("--confirmed-by", default="", help="Nome de quem confirmou")
     
+    # reprocess
+    p_reprocess = sub.add_parser("reprocess", help="Re-renderizar arquivo com template atual")
+    p_reprocess.add_argument("task_id", type=int, help="ID da tarefa")
+
     # list
     sub.add_parser("list", help="Listar execuções")
     
@@ -713,6 +736,9 @@ def main():
     elif args.command == "finish":
         print(manager.finish(args.task_id, args.confirmed_by))
     
+    elif args.command == "reprocess":
+        print(manager.reprocess(args.task_id))
+
     elif args.command == "list":
         print(manager.list_executions())
 
