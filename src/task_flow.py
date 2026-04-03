@@ -123,12 +123,25 @@ class TaskExecution:
         content = self._inject_files(content)
         content = self._inject_decisions(content)
 
-        # Marcar resultado como concluído quando a tarefa estiver finalizada
+        # Marcar resultado ao finalizar
         if self.status == "done":
             content = content.replace(
                 "- [ ] Tarefa concluída com sucesso",
                 "- [x] Tarefa concluída com sucesso"
             )
+            content = content.replace(
+                "- [ ] Código revisado",
+                "- [x] Código revisado"
+            )
+            content = content.replace(
+                "- [ ] Testes passando",
+                "- [x] Testes passando"
+            )
+            if self.confirmed_by and self.confirmed_by != "Pendente confirmação":
+                content = content.replace(
+                    f"- [ ] Confirmado por: {self.confirmed_by}",
+                    f"- [x] Confirmado por: {self.confirmed_by}"
+                )
 
         # Remove placeholder de observações finais se vazio
         content = content.replace("<!-- FINAL_NOTES_PLACEHOLDER -->", "")
