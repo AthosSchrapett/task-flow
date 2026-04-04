@@ -1,6 +1,70 @@
 # Task Flow
 
-Ferramentas de automação para o projeto Arenar: sincronização Azure DevOps ↔ Obsidian Vault.
+Ferramentas de automação para o projeto Arenar: sincronização Azure DevOps ↔ Obsidian Vault **com sugestão automática de agents especializados**.
+
+## ✨ Novidade: Sugestão Automática de Agents (Fase 1 Implementada!)
+
+Ao iniciar uma tarefa, o sistema agora:
+- 🔍 Detecta automaticamente o tipo (Backend/Frontend)
+- 📚 Carrega 12 agents especializados disponíveis
+- 🎯 Sugere top 3-5 agents mais relevantes
+- ⭐ Calcula score de relevância baseado em keywords
+
+### Agents Disponíveis
+
+**Backend (8 agents):**
+- `dotnet-cqrs` - Commands, Queries, Handlers, Validators
+- `dotnet-endpoints` - Controllers, API routes
+- `dotnet-domain` - Entities, Value Objects, Domain Events
+- `dotnet-integrations` - APIs externas, validações
+- `dotnet-persistence` - EF Core, migrations, repositories
+- `dotnet-testing` - Unit tests, mocking
+- `dotnet-modules` - Estrutura modular, DI
+- `dotnet-geo` - Geolocalização
+
+**Frontend (4 agents):**
+- `rn-architecture` - Feature-Sliced Design
+- `rn-components` - React Native patterns
+- `rn-patterns` - Custom hooks, state management
+- `rn-performance` - Otimizações
+
+## 🚀 Uso Rápido
+
+### Iniciar Tarefa (com sugestões automáticas)
+```bash
+py src/task_flow.py start <task_id> --info '<json>'
+```
+
+**Output esperado:**
+```
+================================================================================
+📚 AGENTS RECOMENDADOS PARA ESTA TAREFA
+================================================================================
+   ⭐⭐⭐ dotnet-cqrs                      Relevância: 73%
+   ⭐⭐  dotnet-endpoints                 Relevância: 66%
+   ⭐   dotnet-integrations              Relevância: 45%
+
+Para consultar um agent durante o desenvolvimento:
+  py src/task_flow.py guidance <task_id>
+================================================================================
+```
+
+### Consultar Agents Durante Desenvolvimento
+
+```bash
+# Ver sugestões novamente
+py src/task_flow.py guidance <task_id>
+
+# Ver conteúdo completo de um agent
+py src/task_flow.py guidance <task_id> --agent dotnet-cqrs
+
+# Listar todos agents disponíveis
+py src/task_flow.py agents
+
+# Listar apenas backend ou frontend
+py src/task_flow.py agents --type backend
+py src/task_flow.py agents --type frontend
+```
 
 ## Ferramentas
 

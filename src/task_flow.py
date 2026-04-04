@@ -31,6 +31,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+# Import agents engine
+from agents_engine import AgentsEngine
+from agents_metrics import AgentsMetrics  # FASE 4
+
 # Garantir output UTF-8 no Windows
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
@@ -44,6 +48,7 @@ EXECUCOES_PATH = VAULT_PATH / "09-execucoes"
 TEMPLATES_PATH = VAULT_PATH / "_templates"
 SPRINTS_PATH = VAULT_PATH / "06-sprints"
 CONFIG_PATH = ROOT / "config.json"
+METRICS_PATH = ROOT / "agents_metrics.json"  # FASE 4
 
 
 @dataclass
@@ -91,6 +96,7 @@ class TaskExecution:
     commits: list[CommitInfo] = field(default_factory=list)
     files: list[FileChange] = field(default_factory=list)
     decisions: list[str] = field(default_factory=list)
+    agents_consulted: list[str] = field(default_factory=list)  # NOVO: agents consultados
     
     def to_markdown(self) -> str:
         """Gera o conteúdo markdown da nota de execução."""
@@ -122,6 +128,7 @@ class TaskExecution:
         content = self._inject_commits(content)
         content = self._inject_files(content)
         content = self._inject_decisions(content)
+        content = self._inject_guidance(content)
 
         # Marcar resultado ao finalizar
         if self.status == "done":
@@ -236,6 +243,26 @@ class TaskExecution:
         decisions_text = "\n".join([f"- {d}" for d in self.decisions])
         return content.replace("<!-- DECISIONS_PLACEHOLDER -->", decisions_text)
     
+    def _inject_guidance(self, content: str) -> str:
+        """Injeta agents consultados no conteúdo."""
+        if not self.agents_consulted:
+            placeholder_text = "_Nenhum agent foi consultado durante esta execução._"
+            return content.replace("<!-- GUIDANCE_PLACEHOLDER -->", placeholder_text)
+        
+        # Remover duplicatas mantendo ordem
+        unique_agents = list(dict.fromkeys(self.agents_consulted))
+        
+        guidance_text = "| Agent | Consultado em |\n|-------|---------------|\n"
+        for agent in unique_agents:
+            # Extrai timestamp se existir no formato "agent_name@timestamp"
+            if "@" in agent:
+                name, timestamp = agent.split("@", 1)
+                guidance_text += f"| `{name}` | {timestamp} |\n"
+            else:
+                guidance_text += f"| `{agent}` | Durante execução |\n"
+        
+        return content.replace("<!-- GUIDANCE_PLACEHOLDER -->", guidance_text)
+    
     def _format_time_spent(self) -> str:
         """Formata o tempo gasto."""
         if not self.time_spent_minutes:
@@ -348,11 +375,28 @@ class TaskFlowManager:
         
         # Extrai decisões existentes
         decisions = []
-        decision_section = re.search(r'## Decisões\n\n>.*?\n\n(.*?)(?=\n---|\Z)', content, re.DOTALL)
+        decision_section = re.search(r'## Decisões\n\n>.*?\n\n(.*?)(?=\n##|\n---|\Z)', content, re.DOTALL)
         if decision_section:
             for line in decision_section.group(1).split('\n'):
                 if line.startswith('- ['):
                     decisions.append(line[2:])
+        
+        # FASE 2: Extrai agents consultados
+        agents_consulted = []
+        guidance_section = re.search(r'## Guidance Utilizado\n\n>.*?\n\n(.*?)(?=\n##|\n---|\Z)', content, re.DOTALL)
+        if guidance_section:
+            guidance_content = guidance_section.group(1).strip()
+            if guidance_content and not guidance_content.startswith('_Nenhum'):
+                # Parse tabela: | `agent_name` | timestamp |
+                agent_pattern = r'\| `([^`]+)` \| ([^|]+) \|'
+                for match in re.finditer(agent_pattern, guidance_content):
+                    agent_name = match.group(1).strip()
+                    timestamp = match.group(2).strip()
+                    if agent_name not in ['Agent']:  # Skip header
+                        if timestamp != "Durante execução":
+                            agents_consulted.append(f"{agent_name}@{timestamp}")
+                        else:
+                            agents_consulted.append(agent_name)
         
         # Parse started_at com fallback
         started_at = frontmatter.get('started_at', '')
@@ -380,6 +424,7 @@ class TaskFlowManager:
             commits=commits,
             files=files,
             decisions=decisions,
+            agents_consulted=agents_consulted,  # FASE 2: novo campo
         )
         
         return execution
@@ -432,6 +477,27 @@ class TaskFlowManager:
             message="Tarefa iniciada. Status alterado para 'In Progress'.",
             entry_type="log"
         ))
+        
+        # 🎯 FASE 1: DETECÇÃO AUTOMÁTICA DE AGENTS
+        try:
+            agents_engine = AgentsEngine(PROJECT_ROOT)
+            suggestions = agents_engine.suggest_agents(
+                task_title=execution.title,
+                task_description=execution.description,
+                top_n=3
+            )
+            
+            if suggestions:
+                print("\n" + "="*80)
+                print("📚 AGENTS RECOMENDADOS PARA ESTA TAREFA")
+                print("="*80)
+                print(agents_engine.format_suggestions(suggestions))
+                print("\nPara consultar um agent durante o desenvolvimento:")
+                print(f"  py src/task_flow.py guidance {task_id}")
+                print("="*80 + "\n")
+        except Exception as e:
+            # Não bloqueia a execução se houver erro na sugestão de agents
+            print(f"⚠️  Erro ao sugerir agents: {e}")
         
         # Salva arquivo
         exec_file = self._save_execution(execution)
@@ -605,7 +671,8 @@ class TaskFlowManager:
                 "time_spent": execution._format_time_spent(),
                 "commits": len(execution.commits),
                 "files_changed": len(execution.files),
-                "decisions": len(execution.decisions)
+                "decisions": len(execution.decisions),
+                "agents_consulted": len(set([a.split('@')[0] if '@' in a else a for a in execution.agents_consulted])) if execution.agents_consulted else 0  # FASE 2
             },
             "azure_update": {
                 "action": "update_status",
@@ -666,6 +733,125 @@ class TaskFlowManager:
                 result += f"  • [{e.task_id}] {e.title} ({e._format_time_spent()})\n"
         
         return result
+    
+    def guidance(self, task_id: int, agent_name: str = "") -> str:
+        """
+        Mostra agents recomendados ou conteúdo de um agent específico.
+        
+        Args:
+            task_id: ID da tarefa em execução
+            agent_name: Nome do agent específico (opcional)
+        """
+        execution = self._load_execution(task_id)
+        if not execution:
+            return f"❌ Nenhuma execução encontrada para tarefa {task_id}"
+        
+        agents_engine = AgentsEngine(PROJECT_ROOT)
+        
+        if agent_name:
+            # Mostrar conteúdo do agent específico
+            content = agents_engine.get_agent_content(agent_name)
+            if not content:
+                return f"❌ Agent '{agent_name}' não encontrado"
+            
+            # FASE 2: Registrar que este agent foi consultado
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+            agent_record = f"{agent_name}@{timestamp}"
+            
+            if agent_record not in execution.agents_consulted:
+                execution.agents_consulted.append(agent_record)
+                self._save_execution(execution)
+                
+                # FASE 4: Registrar em métricas
+                try:
+                    metrics = AgentsMetrics(METRICS_PATH)
+                    metrics.record_agent_consultation(
+                        agent_name=agent_name,
+                        task_id=task_id,
+                        task_title=execution.title
+                    )
+                except Exception as e:
+                    # Não bloqueia se houver erro em métricas
+                    print(f"⚠️  Erro ao registrar métrica: {e}")
+                
+                print(f"✅ Consulta de '{agent_name}' registrada\n")
+            
+            return f"📚 {agent_name}\n" + "="*80 + "\n\n" + content
+        else:
+            # Mostrar sugestões
+            suggestions = agents_engine.suggest_agents(
+                task_title=execution.title,
+                task_description=execution.description,
+                top_n=5
+            )
+            
+            if not suggestions:
+                return "ℹ️  Nenhum agent sugerido para esta tarefa"
+            
+            result = f"📚 Agents Recomendados para Tarefa {task_id}\n"
+            result += "="*80 + "\n\n"
+            result += agents_engine.format_suggestions(suggestions)
+            result += "\n\nPara ver conteúdo completo:"
+            result += f"\n  py src/task_flow.py guidance {task_id} --agent <nome>"
+            
+            return result
+    
+    def list_agents(self, agent_type: str = "") -> str:
+        """
+        Lista todos os agents disponíveis.
+        
+        Args:
+            agent_type: "backend", "frontend" ou vazio (todos)
+        """
+        agents_engine = AgentsEngine(PROJECT_ROOT)
+        
+        # Validar tipo
+        valid_type = None
+        if agent_type:
+            if agent_type.lower() in ["backend", "be"]:
+                valid_type = "backend"
+            elif agent_type.lower() in ["frontend", "fe"]:
+                valid_type = "frontend"
+        
+        agents = agents_engine.list_all_agents(valid_type)
+        
+        if not agents:
+            return "❌ Nenhum agent encontrado"
+        
+        # Agrupar por tipo
+        backend = [a for a in agents if a.agent_type == "backend"]
+        frontend = [a for a in agents if a.agent_type == "frontend"]
+        
+        result = "📚 Agents Especializados Disponíveis\n" + "="*80 + "\n\n"
+        
+        if backend:
+            result += "🔧 BACKEND:\n"
+            for agent in backend:
+                result += f"  • {agent.display_name}\n"
+            result += "\n"
+        
+        if frontend:
+            result += "🎨 FRONTEND:\n"
+            for agent in frontend:
+                result += f"  • {agent.display_name}\n"
+        
+        result += "\nPara ver conteúdo de um agent:"
+        result += "\n  py src/task_flow.py guidance <task_id> --agent <nome>"
+        
+        return result
+    
+    def metrics_dashboard(self) -> str:
+        """
+        Exibe dashboard de métricas de agents (Fase 4).
+        
+        Returns:
+            Dashboard formatado
+        """
+        try:
+            metrics = AgentsMetrics(METRICS_PATH)
+            return metrics.generate_dashboard()
+        except Exception as e:
+            return f"❌ Erro ao gerar dashboard: {e}"
 
 
 def main():
@@ -718,6 +904,18 @@ def main():
     # list
     sub.add_parser("list", help="Listar execuções")
     
+    # guidance
+    p_guidance = sub.add_parser("guidance", help="Ver agents recomendados ou conteúdo de agent")
+    p_guidance.add_argument("task_id", type=int, help="ID da tarefa")
+    p_guidance.add_argument("--agent", default="", help="Nome do agent específico")
+    
+    # agents
+    p_agents = sub.add_parser("agents", help="Listar agents disponíveis")
+    p_agents.add_argument("--type", default="", help="Tipo: backend, frontend ou vazio (todos)")
+    
+    # metrics (FASE 4)
+    sub.add_parser("metrics", help="Ver dashboard de métricas de agents")
+    
     args = parser.parse_args()
     
     if not args.command:
@@ -753,6 +951,15 @@ def main():
 
     elif args.command == "list":
         print(manager.list_executions())
+    
+    elif args.command == "guidance":
+        print(manager.guidance(args.task_id, args.agent))
+    
+    elif args.command == "agents":
+        print(manager.list_agents(args.type))
+    
+    elif args.command == "metrics":
+        print(manager.metrics_dashboard())
 
 
 if __name__ == "__main__":
