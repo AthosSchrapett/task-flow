@@ -198,7 +198,7 @@ class TaskExecution:
             return content.replace("<!-- LOG_ENTRIES_PLACEHOLDER -->", "")
 
         log_text = "\n".join([
-            f"### {log.timestamp} — {log.entry_type.title()}\n- {log.message}\n"
+            f"### {log.timestamp} — {log.entry_type.title()}\n- {log.message}"
             for log in logs_to_inject
         ])
 
@@ -306,10 +306,9 @@ class TaskFlowManager:
     
     def _parse_execution_from_markdown(self, content: str, task_id: int) -> TaskExecution:
         """Parse do markdown para objeto TaskExecution."""
-        # Extrai frontmatter (procura primeiro bloco --- ... ---)
+        # Extrai frontmatter (primeiro bloco --- ... --- no início do arquivo)
         frontmatter = {}
-        # Procura o bloco de frontmatter após tags ou no início
-        fm_match = re.search(r'\n---\n(.*?)\n---', content, re.DOTALL)
+        fm_match = re.match(r'^---\n(.*?)\n---', content, re.DOTALL)
         if fm_match:
             for line in fm_match.group(1).split('\n'):
                 if ':' in line:
@@ -389,7 +388,7 @@ class TaskFlowManager:
         """Salva execução no arquivo markdown."""
         exec_file = self._get_execution_file(execution.task_id)
         content = execution.to_markdown()
-        exec_file.write_text(content, encoding="utf-8")
+        exec_file.write_text(content, encoding="utf-8", newline='\n')
         return exec_file
     
     def start(self, task_id: int, task_info: Optional[dict] = None) -> str:
