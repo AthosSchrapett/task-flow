@@ -639,7 +639,26 @@ class TaskFlowManager:
         
         if execution.status == "done":
             return f"⚠️ Tarefa {task_id} já está finalizada"
-        
+
+        # Validação: bloqueia finish sem commits registrados
+        if not execution.commits:
+            return json.dumps({
+                "success": False,
+                "error": "PROCESSO INCOMPLETO",
+                "message": (
+                    f"❌ Tarefa {task_id} não pode ser finalizada sem commits registrados.\n"
+                    "Execute o git commit e depois:\n"
+                    f"  py src/task_flow.py commit {task_id} <hash> \"<mensagem>\"\n"
+                    "Então chame finish novamente."
+                ),
+                "missing": ["commit"]
+            })
+
+        # Aviso: muitos arquivos sem decisões registradas
+        warnings = []
+        if len(execution.files) >= 3 and not execution.decisions:
+            warnings.append("Nenhuma decisão técnica registrada para uma tarefa com múltiplos arquivos alterados.")
+
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         
         # Calcula tempo total
@@ -666,6 +685,7 @@ class TaskFlowManager:
             "success": True,
             "message": f"✅ Tarefa {task_id} finalizada!",
             "file": str(exec_file.relative_to(PROJECT_ROOT)),
+            "warnings": warnings,
             "summary": {
                 "title": execution.title,
                 "time_spent": execution._format_time_spent(),
