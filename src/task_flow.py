@@ -438,6 +438,15 @@ class TaskFlowManager:
         exec_file.write_text(content, encoding="utf-8", newline='\n')
         return exec_file
     
+    def _get_active_state(self, task_type: str) -> str:
+        """Retorna o estado 'ativo' correto conforme o tipo de work item do Azure DevOps."""
+        t = task_type.lower()
+        if "task" in t:
+            return "In Progress"          # Task: To Do → In Progress → Done
+        if "bug" in t:
+            return "Committed"            # Bug: New → Committed → Done
+        return "Active"                   # PBI, Story, Feature, Epic: New → Active → Done
+
     def _resolve_assignee(self, task_info: Optional[dict], current_user: str = "") -> str:
         """Resolve responsável priorizando o usuário autenticado no Azure DevOps."""
         info = task_info or {}
@@ -483,12 +492,14 @@ class TaskFlowManager:
         # Cria nova execução
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         assignee = self._resolve_assignee(task_info, current_user)
-        
+        task_type = task_info.get("type", "Task")
+        active_state = self._get_active_state(task_type)
+
         execution = TaskExecution(
             task_id=task_id,
             title=task_info.get("title", f"Task {task_id}"),
             description=task_info.get("description", ""),
-            task_type=task_info.get("type", "Task"),
+            task_type=task_type,
             status="in-progress",
             assigned_to=assignee,
             sprint=task_info.get("sprint", "Iteration Path"),
@@ -496,11 +507,11 @@ class TaskFlowManager:
             azure_url=f"https://dev.azure.com/{self.config['azure_org']}/{self.config['azure_project']}/_workitems/edit/{task_id}",
             started_at=now,
         )
-        
+
         # Adiciona log inicial
         execution.logs.append(LogEntry(
             timestamp=now,
-            message="Tarefa iniciada. Status alterado para 'In Progress'.",
+            message=f"Tarefa iniciada. Status alterado para '{active_state}'.",
             entry_type="log"
         ))
         
@@ -527,8 +538,22 @@ class TaskFlowManager:
         
         # Salva arquivo
         exec_file = self._save_execution(execution)
-        assignee_for_instruction = assignee.replace("'", "\\'")
-        
+
+        # Monta children_azure_update para tasks filhas informadas em task_info["children"]
+        children_ids = task_info.get("children", [])
+        children_updates = [
+            {
+                "task_id": child_id,
+                "new_status": "In Progress",
+                "assigned_to": assignee,
+                "instruction": (
+                    f"OBRIGATÓRIO: mcp__azure-devops__updateWorkItem("
+                    f"id: {child_id}, state='In Progress', assignedTo='{assignee}')"
+                )
+            }
+            for child_id in children_ids
+        ]
+
         # Retorna instruções para atualizar Azure
         return json.dumps({
             "success": True,
@@ -537,18 +562,20 @@ class TaskFlowManager:
             "azure_update": {
                 "action": "update_status",
                 "task_id": task_id,
-                "new_status": "In Progress",
+                "new_status": active_state,
                 "assigned_to": assignee,
                 "instruction": (
-                    f"Use Azure-updateWorkItem para atualizar tarefa {task_id}: "
-                    f"state='In Progress', assignedTo='{assignee_for_instruction}'"
+                    f"OBRIGATÓRIO: execute imediatamente "
+                    f"mcp__azure-devops__updateWorkItem("
+                    f"id: {task_id}, state='{active_state}', assignedTo='{assignee}')"
                 )
             },
+            "children_azure_update": children_updates,
             "sprint_update": {
                 "action": "update_sprint_doc",
                 "sprint": execution.sprint,
                 "task_id": task_id,
-                "new_status": "In Progress"
+                "new_status": active_state
             }
         })
     
@@ -661,7 +688,7 @@ class TaskFlowManager:
 🔗 Azure: {execution.azure_url}
 """
     
-    def finish(self, task_id: int, confirmed_by: str = "") -> str:
+    def finish(self, task_id: int, confirmed_by: str = "", children: Optional[list[int]] = None) -> str:
         """Finaliza execução da tarefa."""
         execution = self._load_execution(task_id)
         if not execution:
@@ -710,7 +737,23 @@ class TaskFlowManager:
         ))
         
         exec_file = self._save_execution(execution)
-        
+        assignee = execution.assigned_to
+
+        # Monta children_azure_update
+        children_list = children or []
+        children_updates = [
+            {
+                "task_id": child_id,
+                "new_status": "Done",
+                "assigned_to": assignee,
+                "instruction": (
+                    f"OBRIGATÓRIO: mcp__azure-devops__updateWorkItemState(id: {child_id}, state='Done') "
+                    f"+ mcp__azure-devops__updateWorkItem(id: {child_id}, assignedTo='{assignee}')"
+                )
+            }
+            for child_id in children_list
+        ]
+
         return json.dumps({
             "success": True,
             "message": f"✅ Tarefa {task_id} finalizada!",
@@ -722,14 +765,20 @@ class TaskFlowManager:
                 "commits": len(execution.commits),
                 "files_changed": len(execution.files),
                 "decisions": len(execution.decisions),
-                "agents_consulted": len(set([a.split('@')[0] if '@' in a else a for a in execution.agents_consulted])) if execution.agents_consulted else 0  # FASE 2
+                "agents_consulted": len(set([a.split('@')[0] if '@' in a else a for a in execution.agents_consulted])) if execution.agents_consulted else 0
             },
             "azure_update": {
                 "action": "update_status",
                 "task_id": task_id,
                 "new_status": "Done",
-                "instruction": f"Use Azure-updateWorkItemState para atualizar tarefa {task_id} para 'Done'"
+                "assigned_to": assignee,
+                "instruction": (
+                    f"OBRIGATÓRIO: após confirmação, execute "
+                    f"mcp__azure-devops__updateWorkItemState(id: {task_id}, state='Done') "
+                    f"+ verifique assignedTo='{assignee}'"
+                )
             },
+            "children_azure_update": children_updates,
             "sprint_update": {
                 "action": "update_sprint_doc",
                 "sprint": execution.sprint,
@@ -947,6 +996,7 @@ def main():
     p_finish = sub.add_parser("finish", help="Finalizar execução")
     p_finish.add_argument("task_id", type=int, help="ID da tarefa")
     p_finish.add_argument("--confirmed-by", default="", help="Nome de quem confirmou")
+    p_finish.add_argument("--children", default="", help="IDs das tasks filhas separados por vírgula (ex: 869,870)")
     
     # reprocess
     p_reprocess = sub.add_parser("reprocess", help="Re-renderizar arquivo com template atual")
@@ -995,7 +1045,8 @@ def main():
         print(manager.status(args.task_id))
     
     elif args.command == "finish":
-        print(manager.finish(args.task_id, args.confirmed_by))
+        children_list = [int(x.strip()) for x in args.children.split(",") if x.strip()] if args.children else []
+        print(manager.finish(args.task_id, args.confirmed_by, children_list))
     
     elif args.command == "reprocess":
         print(manager.reprocess(args.task_id))
