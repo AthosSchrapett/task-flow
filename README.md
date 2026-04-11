@@ -32,7 +32,7 @@ Ao iniciar uma tarefa, o sistema agora:
 
 ### Iniciar Tarefa (com sugestões automáticas)
 ```bash
-py src/task_flow.py start <task_id> --info '<json>'
+py src/task_flow.py start <task_id> --info '<json>' --current-user "<usuario_azure_autenticado>"
 ```
 
 **Output esperado:**
@@ -94,7 +94,7 @@ Sincronização bidirecional Azure ↔ Obsidian com log completo.
 
 ```bash
 # Iniciar execução de tarefa
-py src/task_flow.py start 758 --info '{"title": "...", "type": "Task", ...}'
+py src/task_flow.py start 758 --info '{"title": "...", "type": "Task", ...}' --current-user "Nome Sobrenome"
 
 # Adicionar entrada de log
 py src/task_flow.py log 758 "Implementada validação de CPF"
@@ -179,7 +179,7 @@ Edite `config.json`:
 
 ```json
 {
-  "default_assignee": "Seu Nome",
+  "default_assignee": "Seu Nome (fallback)",
   "azure_org": "sua-org",
   "azure_project": "SeuProjeto",
   "vault_path": "../arenar-vault",
@@ -204,8 +204,8 @@ O sistema é projetado para funcionar com:
 "Execute a tarefa 758 do Azure"
 
 → Agente busca: Azure-getWorkItem(id: 758)
-→ Agente executa: py src/task_flow.py start 758 --info '...'
-→ Agente atualiza: Azure-updateWorkItem(id: 758, state: "In Progress")
+→ Agente executa: py src/task_flow.py start 758 --info '...' --current-user '<usuario_azure_autenticado>'
+→ Agente atualiza: Azure-updateWorkItem(id: 758, state: "In Progress", assignedTo: "<usuario_azure_autenticado>")
 ```
 
 ---

@@ -109,6 +109,7 @@ class TaskExecution:
             "{{TITLE}}": self.title,
             "{{TYPE}}": self.task_type,
             "{{STATUS}}": self.status,
+            "{{ASSIGNED_TO}}": self.assigned_to,
             "{{DESCRIPTION}}": self.description or "Sem descrição",
             "{{STARTED_AT}}": self.started_at,
             "{{FINISHED_AT}}": self.finished_at or "",
@@ -118,6 +119,7 @@ class TaskExecution:
             "{{SPRINT_FILE}}": self._get_sprint_file(),
             "{{STORY_POINTS}}": str(self.story_points),
             "{{CONFIRMED_BY}}": self.confirmed_by or "",
+            "{{AZURE_URL}}": self.azure_url,
         }
 
         for placeholder, value in replacements.items():
@@ -436,7 +438,27 @@ class TaskFlowManager:
         exec_file.write_text(content, encoding="utf-8", newline='\n')
         return exec_file
     
-    def start(self, task_id: int, task_info: Optional[dict] = None) -> str:
+    def _resolve_assignee(self, task_info: Optional[dict], current_user: str = "") -> str:
+        """Resolve responsável priorizando o usuário autenticado no Azure DevOps."""
+        info = task_info or {}
+        candidates = [
+            current_user,
+            info.get("current_user"),
+            info.get("azure_user"),
+            os.getenv("AZURE_DEVOPS_AUTHENTICATED_USER", ""),
+            os.getenv("AZURE_DEVOPS_USER", ""),
+            self.config.get("default_assignee", ""),
+        ]
+
+        for candidate in candidates:
+            if isinstance(candidate, str):
+                value = candidate.strip()
+                if value:
+                    return value
+
+        return self.config.get("default_assignee", "")
+
+    def start(self, task_id: int, task_info: Optional[dict] = None, current_user: str = "") -> str:
         """
         Inicia execução de uma tarefa.
         
@@ -452,11 +474,15 @@ class TaskFlowManager:
             return json.dumps({
                 "action": "fetch_azure_task",
                 "task_id": task_id,
-                "instruction": f"Use Azure-getWorkItem para buscar tarefa {task_id} e então chame task_flow.py start {task_id} --info <json>"
+                "instruction": (
+                    f"Use Azure-getWorkItem para buscar tarefa {task_id} e então chame "
+                    f"task_flow.py start {task_id} --info <json> --current-user <usuario_azure_autenticado>"
+                )
             })
         
         # Cria nova execução
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        assignee = self._resolve_assignee(task_info, current_user)
         
         execution = TaskExecution(
             task_id=task_id,
@@ -464,7 +490,7 @@ class TaskFlowManager:
             description=task_info.get("description", ""),
             task_type=task_info.get("type", "Task"),
             status="in-progress",
-            assigned_to=self.config["default_assignee"],
+            assigned_to=assignee,
             sprint=task_info.get("sprint", "Iteration Path"),
             story_points=task_info.get("story_points", 0),
             azure_url=f"https://dev.azure.com/{self.config['azure_org']}/{self.config['azure_project']}/_workitems/edit/{task_id}",
@@ -501,6 +527,7 @@ class TaskFlowManager:
         
         # Salva arquivo
         exec_file = self._save_execution(execution)
+        assignee_for_instruction = assignee.replace("'", "\\'")
         
         # Retorna instruções para atualizar Azure
         return json.dumps({
@@ -511,8 +538,11 @@ class TaskFlowManager:
                 "action": "update_status",
                 "task_id": task_id,
                 "new_status": "In Progress",
-                "assigned_to": self.config["default_assignee"],
-                "instruction": f"Use Azure-updateWorkItem para atualizar tarefa {task_id}: state='In Progress', assignedTo='{self.config['default_assignee']}'"
+                "assigned_to": assignee,
+                "instruction": (
+                    f"Use Azure-updateWorkItem para atualizar tarefa {task_id}: "
+                    f"state='In Progress', assignedTo='{assignee_for_instruction}'"
+                )
             },
             "sprint_update": {
                 "action": "update_sprint_doc",
@@ -884,6 +914,7 @@ def main():
     p_start = sub.add_parser("start", help="Iniciar execução de tarefa")
     p_start.add_argument("task_id", type=int, help="ID da tarefa no Azure DevOps")
     p_start.add_argument("--info", type=str, help="JSON com informações da tarefa")
+    p_start.add_argument("--current-user", type=str, default="", help="Usuário autenticado no Azure DevOps")
     
     # log
     p_log = sub.add_parser("log", help="Adicionar entrada de log")
@@ -946,7 +977,7 @@ def main():
     
     if args.command == "start":
         task_info = json.loads(args.info) if args.info else None
-        print(manager.start(args.task_id, task_info))
+        print(manager.start(args.task_id, task_info, args.current_user))
     
     elif args.command == "log":
         print(manager.log(args.task_id, args.message))
