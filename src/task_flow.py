@@ -400,6 +400,14 @@ class TaskFlowManager:
                         else:
                             agents_consulted.append(agent_name)
         
+        # Extrai description da seção "## Contexto"
+        description = ""
+        ctx_match = re.search(r'## Contexto\n\n> (.+?)(?=\n\n|\n#|\Z)', content, re.DOTALL)
+        if ctx_match:
+            raw = ctx_match.group(1).strip()
+            if raw and raw != "Sem descrição":
+                description = raw
+
         # Parse started_at com fallback
         started_at = frontmatter.get('started_at', '')
         if not started_at:
@@ -408,11 +416,11 @@ class TaskFlowManager:
                 started_at = logs[0].timestamp
             else:
                 started_at = datetime.now().strftime("%Y-%m-%d %H:%M")
-        
+
         execution = TaskExecution(
             task_id=task_id,
             title=frontmatter.get('title', f'Task {task_id}'),
-            description="",
+            description=description,
             task_type=frontmatter.get('type', 'Task'),
             status=frontmatter.get('status', 'in-progress'),
             assigned_to=frontmatter.get('assigned_to', self.config['default_assignee']),
