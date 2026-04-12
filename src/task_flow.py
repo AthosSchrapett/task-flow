@@ -523,6 +523,13 @@ class TaskFlowManager:
             entry_type="log"
         ))
         
+        # 🔍 FASE 0: LEMBRETE DO PATTERN SNAPSHOT
+        if (PROJECT_ROOT / ".claude" / "task-flow.yaml").exists():
+            print("\n" + "="*80)
+            print("🔍 FASE 0 — Antes de implementar, execute:")
+            print("   py task-flow/src/task_flow.py discover")
+            print("="*80)
+
         # 🎯 FASE 1: DETECÇÃO AUTOMÁTICA DE AGENTS
         try:
             agents_engine = AgentsEngine(PROJECT_ROOT)
@@ -947,6 +954,139 @@ class TaskFlowManager:
         
         return result
     
+    def discover(self) -> str:
+        """Exibe o Pattern Snapshot do projeto lido de .claude/task-flow.yaml."""
+        try:
+            import yaml
+        except ImportError:
+            return "❌ PyYAML não instalado. Execute: pip install pyyaml"
+
+        config_path = PROJECT_ROOT / ".claude" / "task-flow.yaml"
+        if not config_path.exists():
+            return (
+                "⚠️  .claude/task-flow.yaml não encontrado.\n"
+                "Crie-o para ativar o Pattern Snapshot automático."
+            )
+
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                config = yaml.safe_load(f) or {}
+        except Exception as e:
+            return f"❌ Erro ao ler task-flow.yaml: {e}"
+
+        project   = config.get("project", {})
+        patterns  = config.get("patterns", {})
+        naming    = config.get("naming", {})
+        rules     = config.get("custom_rules", [])
+        approved  = config.get("approved_libs", {})
+        blocked   = config.get("blocked_libs", {})
+
+        lines = [
+            f"PATTERN SNAPSHOT — {project.get('name', 'Projeto')}",
+            "━" * 60,
+            f"Stack:        {project.get('stack', '?')}",
+            f"Architecture: {project.get('architecture', '?')}",
+            "",
+        ]
+
+        # CQRS
+        cqrs = patterns.get("cqrs", {})
+        if cqrs:
+            mediator = cqrs.get("mediator", "?")
+            note = cqrs.get("note", "")
+            cqrs_line = f"CQRS:         {mediator}"
+            if note:
+                cqrs_line += f" — {note}"
+            lines.append(cqrs_line)
+
+        # Pipeline
+        pipeline = patterns.get("pipeline", {})
+        if pipeline.get("order"):
+            lines.append(f"Pipeline:     {' → '.join(pipeline['order'])}")
+            if pipeline.get("note_uow"):
+                lines.append(f"  ⚠️  {pipeline['note_uow']}")
+
+        # Persistence
+        persistence = patterns.get("persistence", {})
+        if persistence:
+            uow = "UnitOfWork automático (PersistenceBehavior)" if persistence.get("unit_of_work_automatic") else (
+                "UnitOfWork manual" if persistence.get("unit_of_work") else "Sem UnitOfWork"
+            )
+            lines.append(f"Persistence:  {uow}, {persistence.get('orm', '?')}, repos {persistence.get('repository', '?')}")
+
+        # Error handling
+        errors = patterns.get("error_handling", {})
+        if errors:
+            result_type = errors.get("result_type", "")
+            types_str = ", ".join(errors.get("error_types", []))
+            lines.append(f"Errors:       {errors.get('style', '?')} ({result_type})")
+            if types_str:
+                lines.append(f"  Types:      {types_str}")
+
+        # Domain
+        domain = patterns.get("domain", {})
+        if domain:
+            style = domain.get("style", "?")
+            features = []
+            if domain.get("private_constructors"): features.append("construtores privados")
+            if domain.get("factory_methods"):       features.append(f"Create() → {domain.get('factory_return', 'Result<T>')}")
+            if domain.get("value_objects"):         features.append(domain.get("value_object_style", "Value Objects"))
+            if domain.get("domain_events"):         features.append(domain.get("domain_event_style", "Domain Events"))
+            lines.append(f"Domain:       {style}")
+            for f in features:
+                lines.append(f"  • {f}")
+
+        # Validation
+        validation = patterns.get("validation", {})
+        if validation:
+            pipeline_note = "pipeline automático" if validation.get("pipeline") else "manual"
+            lines.append(f"Validation:   {validation.get('library', '?')} ({pipeline_note})")
+
+        # Testing
+        testing = patterns.get("testing", {})
+        if testing:
+            lines.append(f"Testing:      {testing.get('framework', '?')} + {testing.get('mocking', '?')}")
+            if testing.get("naming"):
+                lines.append(f"  Naming:     {testing['naming']}")
+            if testing.get("pattern"):
+                lines.append(f"  Padrão:     {testing['pattern']}")
+
+        # Naming
+        be_naming = naming.get("backend", {})
+        if be_naming:
+            lines.append("")
+            lines.append("NAMING (backend):")
+            for k, v in be_naming.items():
+                lines.append(f"  {k:<12} {v}")
+
+        # Custom rules
+        if rules:
+            lines.append("")
+            lines.append("REGRAS CUSTOMIZADAS:")
+            for rule in rules:
+                lines.append(f"  • {rule}")
+
+        # Libs
+        def _fmt_libs(libs_config):
+            if isinstance(libs_config, dict):
+                return libs_config.get("backend", []), libs_config.get("frontend", [])
+            if isinstance(libs_config, list):
+                return libs_config, []
+            return [], []
+
+        ok_be, ok_fe = _fmt_libs(approved)
+        bl_be, _ = _fmt_libs(blocked)
+
+        if ok_be:
+            lines.append("")
+            lines.append(f"LIBS APROVADAS (backend):  {', '.join(ok_be)}")
+        if ok_fe:
+            lines.append(f"LIBS APROVADAS (frontend): {', '.join(ok_fe)}")
+        if bl_be:
+            lines.append(f"LIBS PROIBIDAS (backend):  {', '.join(bl_be)}")
+
+        return "\n".join(lines)
+
     def metrics_dashboard(self) -> str:
         """
         Exibe dashboard de métricas de agents (Fase 4).
@@ -1022,6 +1162,9 @@ def main():
     p_agents = sub.add_parser("agents", help="Listar agents disponíveis")
     p_agents.add_argument("--type", default="", help="Tipo: backend, frontend ou vazio (todos)")
     
+    # discover
+    sub.add_parser("discover", help="Exibir Pattern Snapshot do projeto (.claude/task-flow.yaml)")
+
     # metrics (FASE 4)
     sub.add_parser("metrics", help="Ver dashboard de métricas de agents")
     
@@ -1068,6 +1211,9 @@ def main():
     elif args.command == "agents":
         print(manager.list_agents(args.type))
     
+    elif args.command == "discover":
+        print(manager.discover())
+
     elif args.command == "metrics":
         print(manager.metrics_dashboard())
 

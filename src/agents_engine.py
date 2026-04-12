@@ -11,6 +11,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple
 
+try:
+    import yaml as _yaml
+    _YAML_AVAILABLE = True
+except ImportError:
+    _YAML_AVAILABLE = False
+
 
 @dataclass
 class Agent:
@@ -50,17 +56,34 @@ class AgentsEngine:
     def __init__(self, project_root: Path):
         """
         Inicializa o engine.
-        
+
         Args:
-            project_root: Raiz do projeto Arenar (contém arenar-backend, arenar-frontend, etc)
+            project_root: Raiz do projeto (contém .claude/task-flow.yaml, ou subpastas com agents)
         """
         self.project_root = project_root
-        self.backend_agents_path = project_root / "arenar-backend" / ".claude" / "commands"
-        self.frontend_agents_path = project_root / "arenar-frontend" / ".claude" / "commands"
-        
+
+        config = self._load_task_flow_config()
+        agents_config = config.get("agents", {})
+        backend_rel = agents_config.get("backend_path", "arenar-backend/.claude/commands")
+        frontend_rel = agents_config.get("frontend_path", "arenar-frontend/.claude/commands")
+
+        self.backend_agents_path = project_root / backend_rel
+        self.frontend_agents_path = project_root / frontend_rel
+
         self._backend_agents: List[Agent] = []
         self._frontend_agents: List[Agent] = []
         self._loaded = False
+
+    def _load_task_flow_config(self) -> dict:
+        """Carrega .claude/task-flow.yaml se existir."""
+        config_path = self.project_root / ".claude" / "task-flow.yaml"
+        if not config_path.exists() or not _YAML_AVAILABLE:
+            return {}
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                return _yaml.safe_load(f) or {}
+        except Exception:
+            return {}
     
     def load_agents(self) -> None:
         """Carrega todos os agents disponíveis."""
