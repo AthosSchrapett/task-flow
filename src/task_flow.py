@@ -42,13 +42,14 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="repla
 # Diretórios
 SRC_DIR = Path(__file__).parent.resolve()
 ROOT = SRC_DIR.parent  # task-flow/
-PROJECT_ROOT = ROOT.parent  # Arenar/
+PROJECT_ROOT = ROOT.parent.parent  # Arenar/ (tools/task-flow → tools → Arenar)
 VAULT_PATH = PROJECT_ROOT / "arenar-vault"
 EXECUCOES_PATH = VAULT_PATH / "09-execucoes"
 TEMPLATES_PATH = VAULT_PATH / "_templates"
 SPRINTS_PATH = VAULT_PATH / "06-sprints"
 CONFIG_PATH = ROOT / "config.json"
 METRICS_PATH = ROOT / "agents_metrics.json"  # FASE 4
+PLANOS_PATH = VAULT_PATH / "10-planos"
 
 
 @dataclass
@@ -117,6 +118,8 @@ class TaskExecution:
             "{{TIME_SPENT}}": self._format_time_spent(),
             "{{SPRINT}}": self.sprint,
             "{{SPRINT_FILE}}": self._get_sprint_file(),
+            "{{SPRINT_TAG}}": self._get_sprint_tag(),
+            "{{TYPE_TAG}}": self.task_type.lower().replace(" ", "-"),
             "{{STORY_POINTS}}": str(self.story_points),
             "{{CONFIRMED_BY}}": self.confirmed_by or "",
             "{{AZURE_URL}}": self.azure_url,
@@ -286,6 +289,18 @@ class TaskExecution:
         sprint_lower = re.sub(r'[^\w-]', '', sprint_lower)
         return sprint_lower
 
+    def _get_sprint_tag(self) -> str:
+        """Retorna tag da sprint: 'Sprint 1' → 'sprint-1', 'Iteration Path' → ''."""
+        if self.sprint in ('Iteration Path', 'Unknown', ''):
+            return ''
+        m = re.search(r'sprint[^\d]*(\d+)', self.sprint, re.IGNORECASE)
+        return f'sprint-{m.group(1)}' if m else ''
+
+    @property
+    def sprint_folder(self) -> str:
+        """Retorna nome da subpasta da sprint para organizar execuções."""
+        return self._get_sprint_tag()
+
 
 class TaskFlowManager:
     """Gerenciador do fluxo de execução de tarefas."""
@@ -316,11 +331,12 @@ class TaskFlowManager:
     
     def _get_execution_file(self, task_id: int) -> Path:
         """Retorna o caminho do arquivo de execução."""
-        # Busca arquivo existente
-        for f in EXECUCOES_PATH.glob(f"*-task-{task_id}.md"):
-            return f
-        
-        # Novo arquivo
+        # Busca arquivo existente (recursivo — arquivos ficam em sprint-N/)
+        for f in EXECUCOES_PATH.rglob(f"*-task-{task_id}.md"):
+            if "_arquivo" not in f.parts:
+                return f
+
+        # Novo arquivo — determina subpasta pelo sprint atual (se disponível)
         date_str = datetime.now().strftime("%Y-%m-%d")
         return EXECUCOES_PATH / f"{date_str}-task-{task_id}.md"
     
@@ -442,6 +458,13 @@ class TaskFlowManager:
     def _save_execution(self, execution: TaskExecution):
         """Salva execução no arquivo markdown."""
         exec_file = self._get_execution_file(execution.task_id)
+        # Se o arquivo ainda não existe, coloca na subpasta do sprint
+        if not exec_file.exists():
+            folder = execution.sprint_folder
+            if folder:
+                target_dir = EXECUCOES_PATH / folder
+                target_dir.mkdir(parents=True, exist_ok=True)
+                exec_file = target_dir / exec_file.name
         content = execution.to_markdown()
         exec_file.write_text(content, encoding="utf-8", newline='\n')
         return exec_file
@@ -742,7 +765,7 @@ class TaskFlowManager:
         execution.status = "done"
         execution.finished_at = now
         execution.time_spent_minutes = elapsed_minutes
-        execution.confirmed_by = confirmed_by or "Pendente confirmação"
+        execution.confirmed_by = confirmed_by or None
         
         # Adiciona log final
         execution.logs.append(LogEntry(
@@ -848,6 +871,122 @@ class TaskFlowManager:
         
         return result
     
+    def regen_index(self) -> str:
+        """Regenera _index.md a partir dos frontmatters de todos os arquivos de execução."""
+        from collections import defaultdict
+
+        index_file = EXECUCOES_PATH / "_index.md"
+        arquivo_dir = EXECUCOES_PATH / "_arquivo"
+
+        all_files = [
+            f for f in EXECUCOES_PATH.rglob("*-task-*.md")
+            if arquivo_dir not in f.parents and f != index_file
+        ]
+
+        executions = []
+        for exec_file in all_files:
+            try:
+                content = exec_file.read_text(encoding="utf-8")
+                m = re.search(r'task-(\d+)\.md$', exec_file.name)
+                if not m:
+                    continue
+                task_id = int(m.group(1))
+
+                fm: dict[str, str] = {}
+                fm_match = re.match(r'^---\n(.*?)\n---', content, re.DOTALL)
+                if fm_match:
+                    for line in fm_match.group(1).split('\n'):
+                        if ':' in line:
+                            k, v = line.split(':', 1)
+                            fm[k.strip()] = v.strip().strip('"')
+
+                rel_str = str(exec_file.relative_to(EXECUCOES_PATH)).replace('\\', '/')
+                executions.append({
+                    'task_id': task_id,
+                    'title': fm.get('title', f'Task {task_id}'),
+                    'sprint': fm.get('sprint', 'Sem sprint'),
+                    'status': fm.get('status', 'done'),
+                    'started_at': fm.get('started_at', ''),
+                    'time_spent_minutes': fm.get('time_spent_minutes', ''),
+                    'assigned_to': fm.get('assigned_to', ''),
+                    'rel_path': rel_str,
+                })
+            except Exception:
+                continue
+
+        def fmt_time(minutes_str: str) -> str:
+            try:
+                mins = int(minutes_str)
+                return f"{mins // 60}h {mins % 60}min" if mins >= 60 else f"{mins} min"
+            except Exception:
+                return "-"
+
+        now = datetime.now().strftime("%Y-%m-%d")
+        total = len(executions)
+        in_progress = [e for e in executions if e['status'] == 'in-progress']
+        done_execs = [e for e in executions if e['status'] == 'done']
+        sorted_all = sorted(executions, key=lambda x: x['started_at'], reverse=True)
+
+        lines = [
+            "# Indice de Execucoes",
+            "",
+            "#execucao #indice #processos",
+            "",
+            "> Registro de todas as execucoes de tarefas do projeto Arenar.",
+            f"> **Ultima atualizacao:** {now} (auto-gerado)",
+            "",
+            "---",
+            "",
+            "## Estatisticas",
+            "",
+            "| Metrica | Valor |",
+            "|---------|-------|",
+            f"| Total de execucoes | {total} |",
+            f"| Em andamento | {len(in_progress)} |",
+            f"| Concluidas | {len(done_execs)} |",
+            "",
+            "---",
+            "",
+            "## Execucoes em Andamento",
+            "",
+            "| ID | Tarefa | Sprint | Inicio | Responsavel |",
+            "|----|--------|--------|--------|-------------|",
+        ]
+        for e in in_progress:
+            lines.append(f"| [[{e['rel_path']}|{e['task_id']}]] | {e['title'][:45]} | {e['sprint']} | {e['started_at']} | {e['assigned_to']} |")
+
+        lines += [
+            "",
+            "---",
+            "",
+            "## Execucoes Recentes (ultimas 10)",
+            "",
+            "| ID | Tarefa | Sprint | Tempo | Status |",
+            "|----|--------|--------|-------|--------|",
+        ]
+        for e in sorted_all[:10]:
+            status_label = "Done" if e['status'] == 'done' else "Em andamento"
+            lines.append(f"| [[{e['rel_path']}|{e['task_id']}]] | {e['title'][:45]} | {e['sprint']} | {fmt_time(e['time_spent_minutes'])} | {status_label} |")
+
+        by_sprint: dict = defaultdict(list)
+        for e in executions:
+            by_sprint[e['sprint']].append(e)
+
+        def _sprint_sort_key(s: str) -> tuple:
+            m = re.search(r'(\d+)', s)
+            return (0, int(m.group(1))) if m else (1, s)
+
+        lines += ["", "---", "", "## Por Sprint", ""]
+        for sprint in sorted(by_sprint.keys(), key=_sprint_sort_key):
+            lines.append(f"### {sprint}")
+            for e in sorted(by_sprint[sprint], key=lambda x: x['started_at']):
+                marker = "Done" if e['status'] == 'done' else "In Progress"
+                lines.append(f"- [[{e['rel_path']}|Task #{e['task_id']}]] -- {e['title'][:55]} {marker}")
+            lines.append("")
+
+        index_file.write_text("\n".join(lines), encoding="utf-8")
+        return f"✅ _index.md regenerado: {total} execuções ({len(in_progress)} em andamento, {len(done_execs)} concluídas)"
+
     def guidance(self, task_id: int, agent_name: str = "") -> str:
         """
         Mostra agents recomendados ou conteúdo de um agent específico.
@@ -1087,6 +1226,52 @@ class TaskFlowManager:
 
         return "\n".join(lines)
 
+    def plan(self, work_item_id: int) -> str:
+        """
+        Gera instruções para Claude criar um plano de implementação.
+
+        O CLI retorna um JSON com instruções detalhadas. Claude executa os passos:
+        1. Busca o work item e seus filhos no Azure DevOps
+        2. Lê overviews de domínio relevantes do vault
+        3. Gera o documento de plano seguindo o template
+        4. Salva em 10-planos/ via mcp__obsidian__write_file
+        5. Pede confirmação para executar
+        """
+        PLANOS_PATH.mkdir(parents=True, exist_ok=True)
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        plan_filename = f"plan-{date_str}-{work_item_id}.md"
+        plan_path = PLANOS_PATH / plan_filename
+        vault_rel = f"C:\\\\Users\\\\Athos\\\\OneDrive\\\\Documentos\\\\projetos\\\\Arenar\\\\arenar-vault\\\\10-planos\\\\{plan_filename}"
+
+        instruction = {
+            "action": "generate_plan",
+            "work_item_id": work_item_id,
+            "plan_file": str(plan_path),
+            "steps": [
+                f"1. BUSCAR WORK ITEM: mcp__azure-devops__getWorkItem(id: {work_item_id})",
+                f"2. BUSCAR FILHOS: mcp__azure-devops__queryWorkItems com 'Parent = {work_item_id}' para obter tasks filhas",
+                "3. LER DOMÍNIO: para cada domínio afetado, ler o overview em arenar-vault/02-dominios/<dominio>/<dominio>-overview.md",
+                "4. GERAR PLANO: seguir o template em arenar-vault/_templates/template-plano.md",
+                f"5. SALVAR: mcp__obsidian__write_file(path: '{vault_rel}', content: <plano_gerado>)",
+                "6. CONFIRMAR: após salvar, exibir o plano ao usuário e perguntar: 'Confirma execução deste plano? (sim/não)'",
+                "   - Se sim: para cada task filha, chamar task-flow start <task_id> em sequência",
+                "   - Se não: informar que o plano foi salvo e pode ser editado antes de executar",
+            ],
+            "template_path": str(TEMPLATES_PATH / "template-plano.md"),
+            "plan_template_rules": [
+                "Frontmatter com: plan_id, work_item_id, title, type, sprint, status: draft, created_at, tasks (lista de IDs)",
+                "Seção Contexto: descrição do work item do Azure",
+                "Seção Escopo: tabela com todos os work items (PBI + tasks filhas)",
+                "Seção Implementação Detalhada: uma subseção por task com arquivos (checkboxes com caminhos reais), passos numerados e critério de aceite",
+                "Seção Ordem de Execução: sequência recomendada com justificativa de dependências",
+                "Seção Riscos e Decisões: checkboxes de pontos de atenção",
+                "Seção Testes Necessários: checkboxes de testes a criar/executar",
+                "Rodapé com comando para executar: py ../tools/task-flow/src/task_flow.py start <task_id>",
+                "Usar caminhos reais do projeto (arenar-backend/src/Modules/...) inferidos do contexto",
+            ],
+        }
+        return json.dumps(instruction, ensure_ascii=False, indent=2)
+
     def metrics_dashboard(self) -> str:
         """
         Exibe dashboard de métricas de agents (Fase 4).
@@ -1152,6 +1337,9 @@ def main():
 
     # list
     sub.add_parser("list", help="Listar execuções")
+
+    # regen-index
+    sub.add_parser("regen-index", help="Regenerar 09-execucoes/_index.md")
     
     # guidance
     p_guidance = sub.add_parser("guidance", help="Ver agents recomendados ou conteúdo de agent")
@@ -1164,6 +1352,10 @@ def main():
     
     # discover
     sub.add_parser("discover", help="Exibir Pattern Snapshot do projeto (.claude/task-flow.yaml)")
+
+    # plan
+    p_plan = sub.add_parser("plan", help="Gerar plano de implementação para um work item")
+    p_plan.add_argument("work_item_id", type=int, help="ID do PBI ou Task no Azure DevOps")
 
     # metrics (FASE 4)
     sub.add_parser("metrics", help="Ver dashboard de métricas de agents")
@@ -1204,6 +1396,9 @@ def main():
 
     elif args.command == "list":
         print(manager.list_executions())
+
+    elif args.command == "regen-index":
+        print(manager.regen_index())
     
     elif args.command == "guidance":
         print(manager.guidance(args.task_id, args.agent))
@@ -1213,6 +1408,9 @@ def main():
     
     elif args.command == "discover":
         print(manager.discover())
+
+    elif args.command == "plan":
+        print(manager.plan(args.work_item_id))
 
     elif args.command == "metrics":
         print(manager.metrics_dashboard())
