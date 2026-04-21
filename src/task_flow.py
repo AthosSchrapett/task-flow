@@ -479,8 +479,15 @@ class TaskFlowManager:
         return "Active"                   # PBI, Story, Feature, Epic: New → Active → Done
 
     def _resolve_assignee(self, task_info: Optional[dict], current_user: str = "") -> str:
-        """Resolve responsável priorizando o usuário autenticado no Azure DevOps."""
+        """Resolve responsável priorizando displayName (nome legível) sobre email."""
         info = task_info or {}
+
+        def _is_email(value: str) -> bool:
+            return "@" in value and "." in value.split("@")[-1]
+
+        def _is_valid_name(value: str) -> bool:
+            return bool(value) and not _is_email(value)
+
         candidates = [
             current_user,
             info.get("current_user"),
@@ -490,11 +497,15 @@ class TaskFlowManager:
             self.config.get("default_assignee", ""),
         ]
 
+        # Primeira passagem: prefere nomes (sem @)
         for candidate in candidates:
-            if isinstance(candidate, str):
-                value = candidate.strip()
-                if value:
-                    return value
+            if isinstance(candidate, str) and _is_valid_name(candidate.strip()):
+                return candidate.strip()
+
+        # Segunda passagem: aceita email só se não houver nenhum nome disponível
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
 
         return self.config.get("default_assignee", "")
 
@@ -614,9 +625,13 @@ class TaskFlowManager:
                 "sprint": execution.sprint,
                 "task_id": task_id,
                 "new_status": active_state
+            },
+            "commit_policy": {
+                "require_user_confirmation": True,
+                "instruction": "OBRIGATÓRIO: antes de executar qualquer 'git commit', apresente ao usuário o resumo das mudanças (arquivos alterados + mensagem proposta) e aguarde confirmação explícita ('sim'/'confirmo'). NÃO faça commit automaticamente sem aprovação do usuário."
             }
         })
-    
+
     def log(self, task_id: int, message: str) -> str:
         """Adiciona entrada de log à execução."""
         execution = self._load_execution(task_id)
@@ -785,8 +800,8 @@ class TaskFlowManager:
                 "new_status": "Done",
                 "assigned_to": assignee,
                 "instruction": (
-                    f"OBRIGATÓRIO: mcp__azure-devops__updateWorkItemState(id: {child_id}, state='Done') "
-                    f"+ mcp__azure-devops__updateWorkItem(id: {child_id}, assignedTo='{assignee}')"
+                    f"OBRIGATÓRIO: mcp__azure-devops__updateWorkItem("
+                    f"id: {child_id}, state='Done', assignedTo='{assignee}')"
                 )
             }
             for child_id in children_list
@@ -811,9 +826,9 @@ class TaskFlowManager:
                 "new_status": "Done",
                 "assigned_to": assignee,
                 "instruction": (
-                    f"OBRIGATÓRIO: após confirmação, execute "
-                    f"mcp__azure-devops__updateWorkItemState(id: {task_id}, state='Done') "
-                    f"+ verifique assignedTo='{assignee}'"
+                    f"OBRIGATÓRIO: execute "
+                    f"mcp__azure-devops__updateWorkItem("
+                    f"id: {task_id}, state='Done', assignedTo='{assignee}')"
                 )
             },
             "children_azure_update": children_updates,
@@ -824,7 +839,11 @@ class TaskFlowManager:
                 "new_status": "Done ✅"
             },
             "confirmation_needed": not confirmed_by,
-            "confirmation_instruction": "Solicite confirmação do solicitante antes de marcar como concluída" if not confirmed_by else None
+            "confirmation_instruction": (
+                "BLOQUEIO: NÃO execute mcp__azure-devops__updateWorkItem nem marque nenhum item como Done "
+                "sem receber confirmação explícita ('sim'/'confirmo') do usuário nesta conversa. "
+                "Exiba o resumo da execução e aguarde resposta antes de qualquer atualização no Azure DevOps."
+            ) if not confirmed_by else None
         })
     
     def reprocess(self, task_id: int) -> str:
@@ -1254,7 +1273,7 @@ class TaskFlowManager:
                 "4. GERAR PLANO: seguir o template em arenar-vault/_templates/template-plano.md",
                 f"5. SALVAR: mcp__obsidian__write_file(path: '{vault_rel}', content: <plano_gerado>)",
                 "6. CONFIRMAR: após salvar, exibir o plano ao usuário e perguntar: 'Confirma execução deste plano? (sim/não)'",
-                "   - Se sim: para cada task filha, chamar task-flow start <task_id> em sequência",
+                "   - Se sim: chamar task-flow start <pbi_id> --info <json_com_children> UMA ÚNICA VEZ para o PBI raiz, passando a lista de tasks filhas em info['children']. NÃO chamar start separadamente para cada task filha.",
                 "   - Se não: informar que o plano foi salvo e pode ser editado antes de executar",
             ],
             "template_path": str(TEMPLATES_PATH / "template-plano.md"),
