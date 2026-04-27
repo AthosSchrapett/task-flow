@@ -93,6 +93,7 @@ class TaskExecution:
     finished_at: Optional[str] = None
     time_spent_minutes: Optional[int] = None
     confirmed_by: Optional[str] = None
+    children: list[int] = field(default_factory=list)  # IDs das tasks filhas
     logs: list[LogEntry] = field(default_factory=list)
     commits: list[CommitInfo] = field(default_factory=list)
     files: list[FileChange] = field(default_factory=list)
@@ -158,6 +159,16 @@ class TaskExecution:
         # Remove placeholder de observações finais se vazio
         content = content.replace("<!-- FINAL_NOTES_PLACEHOLDER -->", "")
         content = content.replace("{{FINAL_NOTES}}", "")
+
+        # Persiste children no frontmatter (sem precisar de placeholder no template)
+        if self.children:
+            children_str = ",".join(str(c) for c in self.children)
+            confirmed_line = f"confirmed_by: {self.confirmed_by or ''}"
+            content = content.replace(
+                confirmed_line,
+                f"{confirmed_line}\nchildren: {children_str}",
+                1
+            )
 
         return content
     
@@ -336,9 +347,9 @@ class TaskFlowManager:
             if "_arquivo" not in f.parts:
                 return f
 
-        # Novo arquivo — determina subpasta pelo sprint atual (se disponível)
+        # Novo arquivo — determina subpasta pelo sprint atual (sem-sprint como fallback)
         date_str = datetime.now().strftime("%Y-%m-%d")
-        return EXECUCOES_PATH / f"{date_str}-task-{task_id}.md"
+        return EXECUCOES_PATH / "sem-sprint" / f"{date_str}-task-{task_id}.md"
     
     def _load_execution(self, task_id: int) -> Optional[TaskExecution]:
         """Carrega execução existente do arquivo markdown."""
@@ -433,6 +444,10 @@ class TaskFlowManager:
             else:
                 started_at = datetime.now().strftime("%Y-%m-%d %H:%M")
 
+        # Parse children (armazenados como "867,868,871,872")
+        children_raw = frontmatter.get('children', '')
+        children = [int(x.strip()) for x in children_raw.split(',') if x.strip().isdigit()] if children_raw else []
+
         execution = TaskExecution(
             task_id=task_id,
             title=frontmatter.get('title', f'Task {task_id}'),
@@ -446,6 +461,7 @@ class TaskFlowManager:
             started_at=started_at,
             finished_at=frontmatter.get('finished_at') or None,
             time_spent_minutes=int(frontmatter['time_spent_minutes']) if frontmatter.get('time_spent_minutes') else None,
+            children=children,
             logs=logs,
             commits=commits,
             files=files,
@@ -458,13 +474,12 @@ class TaskFlowManager:
     def _save_execution(self, execution: TaskExecution):
         """Salva execução no arquivo markdown."""
         exec_file = self._get_execution_file(execution.task_id)
-        # Se o arquivo ainda não existe, coloca na subpasta do sprint
+        # Se o arquivo ainda não existe, coloca na subpasta do sprint (sem-sprint como fallback)
         if not exec_file.exists():
-            folder = execution.sprint_folder
-            if folder:
-                target_dir = EXECUCOES_PATH / folder
-                target_dir.mkdir(parents=True, exist_ok=True)
-                exec_file = target_dir / exec_file.name
+            folder = execution.sprint_folder or "sem-sprint"
+            target_dir = EXECUCOES_PATH / folder
+            target_dir.mkdir(parents=True, exist_ok=True)
+            exec_file = target_dir / exec_file.name
         content = execution.to_markdown()
         exec_file.write_text(content, encoding="utf-8", newline='\n')
         return exec_file
@@ -537,6 +552,8 @@ class TaskFlowManager:
         task_type = task_info.get("type", "Task")
         active_state = self._get_active_state(task_type)
 
+        children_ids = task_info.get("children", [])
+
         execution = TaskExecution(
             task_id=task_id,
             title=task_info.get("title", f"Task {task_id}"),
@@ -548,6 +565,7 @@ class TaskFlowManager:
             story_points=task_info.get("story_points", 0),
             azure_url=f"https://dev.azure.com/{self.config['azure_org']}/{self.config['azure_project']}/_workitems/edit/{task_id}",
             started_at=now,
+            children=children_ids,
         )
 
         # Adiciona log inicial
@@ -588,16 +606,15 @@ class TaskFlowManager:
         # Salva arquivo
         exec_file = self._save_execution(execution)
 
-        # Monta children_azure_update para tasks filhas informadas em task_info["children"]
-        children_ids = task_info.get("children", [])
+        # Monta children_azure_update para tasks filhas (já persistidas em execution.children)
         children_updates = [
             {
                 "task_id": child_id,
                 "new_status": "In Progress",
                 "assigned_to": assignee,
                 "instruction": (
-                    f"OBRIGATÓRIO: mcp__azure-devops__updateWorkItem("
-                    f"id: {child_id}, state='In Progress', assignedTo='{assignee}')"
+                    f"OBRIGATÓRIO: use mcp__azure-devops__updateWorkItem (NUNCA updateWorkItemState) "
+                    f"com id={child_id}, state='In Progress', assignedTo='{assignee}'"
                 )
             }
             for child_id in children_ids
@@ -614,9 +631,8 @@ class TaskFlowManager:
                 "new_status": active_state,
                 "assigned_to": assignee,
                 "instruction": (
-                    f"OBRIGATÓRIO: execute imediatamente "
-                    f"mcp__azure-devops__updateWorkItem("
-                    f"id: {task_id}, state='{active_state}', assignedTo='{assignee}')"
+                    f"OBRIGATÓRIO: use mcp__azure-devops__updateWorkItem (NUNCA updateWorkItemState) "
+                    f"com id={task_id}, state='{active_state}', assignedTo='{assignee}'"
                 )
             },
             "children_azure_update": children_updates,
@@ -742,6 +758,8 @@ class TaskFlowManager:
 """
     
     def finish(self, task_id: int, confirmed_by: str = "", children: Optional[list[int]] = None) -> str:
+        # children=None → usa os children persistidos no start
+        # children=[]   → sobrescreve explicitamente com lista vazia (sem filhos)
         """Finaliza execução da tarefa."""
         execution = self._load_execution(task_id)
         if not execution:
@@ -792,16 +810,16 @@ class TaskFlowManager:
         exec_file = self._save_execution(execution)
         assignee = execution.assigned_to
 
-        # Monta children_azure_update
-        children_list = children or []
+        # Usa children persistidos no start; aceita override via argumento
+        children_list = children if children is not None else execution.children
         children_updates = [
             {
                 "task_id": child_id,
                 "new_status": "Done",
                 "assigned_to": assignee,
                 "instruction": (
-                    f"OBRIGATÓRIO: mcp__azure-devops__updateWorkItem("
-                    f"id: {child_id}, state='Done', assignedTo='{assignee}')"
+                    f"OBRIGATÓRIO: use mcp__azure-devops__updateWorkItem (NUNCA updateWorkItemState) "
+                    f"com id={child_id}, state='Done', assignedTo='{assignee}'"
                 )
             }
             for child_id in children_list
@@ -826,9 +844,8 @@ class TaskFlowManager:
                 "new_status": "Done",
                 "assigned_to": assignee,
                 "instruction": (
-                    f"OBRIGATÓRIO: execute "
-                    f"mcp__azure-devops__updateWorkItem("
-                    f"id: {task_id}, state='Done', assignedTo='{assignee}')"
+                    f"OBRIGATÓRIO: use mcp__azure-devops__updateWorkItem (NUNCA updateWorkItemState) "
+                    f"com id={task_id}, state='Done', assignedTo='{assignee}'"
                 )
             },
             "children_azure_update": children_updates,
